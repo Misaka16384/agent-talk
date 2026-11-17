@@ -9,6 +9,7 @@ so it remembers earlier rounds.
     python agent_talk.py --to gemini --file msg.md               # message from a file
     python agent_talk.py --to gemini --session <id> "next round" # continue it
     python agent_talk.py --to claude ...                         # the other direction
+    python agent_talk.py --to claude --with-memory ...           # Claude with the user's memory
     python agent_talk.py --doctor                                # check the setup
 
 The other side may read the working directory (plus any --read-dir) and the web, may
@@ -27,7 +28,7 @@ import subprocess
 import sys
 import time
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 HOME = os.environ.get("AGENT_TALK_HOME") or os.path.join(os.path.expanduser("~"), ".agent_talk")
 LOGS = os.path.join(HOME, "logs")
@@ -49,6 +50,12 @@ PREAMBLE = (
     "Do not modify anything else and do not run commands. Answer directly and concretely, "
     "disagree openly and give reasons, and mark what you are unsure of. "
     "Reply in the language the question is written in.]\n\n"
+)
+
+MEMORY_NOTE = (
+    "[You have your user's own Claude memory and instructions loaded. Use them as background, but keep "
+    "anything they mark as confidential or private out of your replies: your replies go to {caller}, "
+    "another vendor's AI.]\n\n"
 )
 
 # Variables that a host Claude Code session exports. A child `claude` that inherits them
@@ -76,16 +83,32 @@ def claude_path_rule(path):
     return "//" + p.lstrip("/")
 
 
-def claude_argv(session, model, scratch, read_dirs, message):
+def claude_config_dir():
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def claude_argv(session, model, scratch, read_dirs, message, with_memory=False):
     allow = ["Write(%s/**)" % claude_path_rule(scratch), "Edit(%s/**)" % claude_path_rule(scratch),
              "WebFetch", "WebSearch"]
-    argv = [shutil.which("claude") or "claude", "-p", "--output-format", "json",
-            # --restricted: no command-running tools, user/project settings ignored,
-            # file tools confined to the working directories.
-            "--restricted", "--strict-mcp-config",
-            "--tools", "Read,Grep,Glob,WebFetch,WebSearch,Write,Edit",
-            "--settings", json.dumps({"permissions": {"allow": allow}}),
-            "--add-dir", scratch]
+    if with_memory:
+        # Load everything a normal session loads (CLAUDE.md files, auto-memory, settings,
+        # hooks). dontAsk denies whatever is not explicitly allowed; the deny rules keep the
+        # working directories and Claude's own config/memory folder read-only even if the
+        # user's settings allow edits there.
+        deny = []
+        for d in [os.getcwd()] + list(read_dirs) + [claude_config_dir()]:
+            if not inside(scratch, d):
+                deny += ["Write(%s/**)" % claude_path_rule(d), "Edit(%s/**)" % claude_path_rule(d)]
+        permissions = {"allow": allow, "deny": deny}
+        mode = ["--permission-mode", "dontAsk", "--permission-prompts", "none"]
+    else:
+        # --restricted: no command-running tools, user/project settings, CLAUDE.md and
+        # auto-memory ignored, file tools confined to the working directories.
+        permissions = {"allow": allow}
+        mode = ["--restricted"]
+    argv = ([shutil.which("claude") or "claude", "-p", "--output-format", "json"] + mode +
+            ["--strict-mcp-config", "--tools", "Read,Grep,Glob,WebFetch,WebSearch,Write,Edit",
+             "--settings", json.dumps({"permissions": permissions}), "--add-dir", scratch])
     for d in read_dirs:
         argv += ["--add-dir", d]
     if session:
@@ -95,7 +118,7 @@ def claude_argv(session, model, scratch, read_dirs, message):
     return argv + ["--", message]
 
 
-def agy_argv(session, model, scratch, read_dirs, message):
+def agy_argv(session, model, scratch, read_dirs, message, with_memory=False):
     deny = ["command(*)", "mcp(*)", "execute_url(*)"]
     for d in [os.getcwd()] + list(read_dirs):
         if not inside(scratch, d):          # a deny on a parent of the scratch would block it too
@@ -131,9 +154,16 @@ def load_sessions():
         return {}
 
 
-def save_session(key, scratch):
+def session_record(sessions, key):
+    rec = sessions.get(key)
+    if isinstance(rec, str):            # written by 1.0.x: just the scratch path
+        rec = {"scratch": rec}
+    return rec or {}
+
+
+def save_session(key, record):
     data = load_sessions()
-    data[key] = scratch
+    data[key] = record
     tmp = SESSIONS + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=1)
@@ -186,6 +216,9 @@ def main():
     ap.add_argument("--model", help="model for the other side (`agy models` lists Gemini ids)")
     ap.add_argument("--read-dir", action="append", default=[],
                     help="extra directory the other side may read (repeatable)")
+    ap.add_argument("--with-memory", action="store_true",
+                    help="Claude only, first round only: load the user's CLAUDE.md files, auto-memory, "
+                         "settings and hooks (default: a clean Claude without them)")
     ap.add_argument("--timeout", type=int, default=1200, help="seconds to wait for one round")
     ap.add_argument("--doctor", action="store_true", help="check the setup and exit")
     ap.add_argument("--version", action="version", version=__version__)
@@ -210,14 +243,28 @@ def main():
     target = TARGET[a.to]
     callee, caller = LABEL[target], LABEL["agy" if target == "claude" else "claude"]
     read_dirs = [os.path.abspath(d) for d in a.read_dir]
+    if a.with_memory and target != "claude":
+        sys.exit("agent_talk: --with-memory only applies when talking to Claude "
+                 "(Gemini always loads its own GEMINI.md).")
 
-    sessions = load_sessions()
+    notes = []
     if a.session:
-        scratch = sessions.get("%s:%s" % (target, a.session)) or os.path.join(SCRATCH, "%s-%s" % (target, a.session))
+        rec = session_record(load_sessions(), "%s:%s" % (target, a.session))
+        scratch = rec.get("scratch") or os.path.join(SCRATCH, "%s-%s" % (target, a.session))
+        # Claude keeps the system prompt of a conversation's first request, so the
+        # memory choice is fixed at round one and later rounds follow the record.
+        with_memory = rec["memory"] if "memory" in rec else a.with_memory
+        if a.with_memory and not with_memory:
+            notes.append("[note: this discussion started without --with-memory; memory can only be "
+                         "chosen in the first round, so it continues without it]")
         sent = message
     else:
+        with_memory = a.with_memory
         scratch = os.path.join(SCRATCH, "%s-%s" % (target, time.strftime("%Y%m%d-%H%M%S")))
-        sent = PREAMBLE.format(caller=caller, scratch=fwd(scratch)) + message
+        sent = PREAMBLE.format(caller=caller, scratch=fwd(scratch))
+        if with_memory:
+            sent += MEMORY_NOTE.format(caller=caller)
+        sent += message
     os.makedirs(scratch, exist_ok=True)
     if len(sent) > MAX_ARG:
         sys.exit("agent_talk: the message is %d characters, more than one command line can carry "
@@ -225,7 +272,7 @@ def main():
                  % (len(sent), MAX_ARG))
 
     build = claude_argv if target == "claude" else agy_argv
-    argv = build(a.session, a.model, scratch, read_dirs, sent)
+    argv = build(a.session, a.model, scratch, read_dirs, sent, with_memory)
     if not os.path.isabs(argv[0]):
         sys.exit("agent_talk: `%s` is not on PATH." % argv[0])
     try:
@@ -251,7 +298,7 @@ def main():
             hint = "\nRun `claude auth login` once in a terminal, then retry."
         sys.exit("agent_talk: %s failed: %s%s" % (callee, (reply or p.stderr)[-1500:], hint))
 
-    save_session("%s:%s" % (target, sid), scratch)
+    save_session("%s:%s" % (target, sid), {"scratch": scratch, "memory": with_memory})
     os.makedirs(LOGS, exist_ok=True)
     log = os.path.join(LOGS, "%s-%s.md" % (target, sid))
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -261,7 +308,11 @@ def main():
 
     print(reply.strip())
     print()
+    for note in notes:
+        print(note)
     print("[session: %s]" % sid)
+    if target == "claude":
+        print("[memory: %s]" % ("on -- the user's CLAUDE.md and auto-memory are loaded" if with_memory else "off"))
     print("[scratch: %s]" % scratch)
     print("[log: %s]" % log)
     print("[round complete -- continue with: --to %s --session %s]" % (a.to, sid))

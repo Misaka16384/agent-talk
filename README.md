@@ -80,6 +80,7 @@ python agent_talk.py --to gemini "first message"            # start a discussion
 python agent_talk.py --to gemini --file msg.md               # message from a file (LaTeX, quotes)
 python agent_talk.py --to gemini --session <id> "next round" # continue it
 python agent_talk.py --to claude --model opus ...            # the other direction
+python agent_talk.py --to claude --with-memory ...           # Claude with your CLAUDE.md + memory
 ```
 
 Each round prints the reply followed by `[session: …]`, `[scratch: …]` and `[log: …]`.
@@ -113,6 +114,20 @@ How each side is restricted:
 - **agy** runs with per-run `--settings`: `toolPermission: request-review`, deny rules for commands, MCP and writes to the working directory, and the scratch folder added to the workspace.
 
 agy has no per-run switch that forbids writes *outside* the workspace. If your agy config allows non-workspace file access, the "write nowhere else" rule rests on the instruction alone.
+
+### Claude with your memory (`--with-memory`)
+
+By default, the Claude that Gemini talks to starts **clean**: no CLAUDE.md files, no auto-memory, and none of your Claude settings. It knows only what Gemini's message tells it.
+
+If your Claude history matters, Gemini can pass `--with-memory` on the first round of a discussion. A typical case is working on the same paper on both sides. Claude then:
+
+- loads your CLAUDE.md files and the auto-memory of the current folder's project;
+- uses your Claude settings and hooks for that run;
+- can still write only in its scratch folder. It runs with `--permission-mode dontAsk`, plus deny rules for the working directories and `~/.claude`, so the project, its memory and its settings stay read-only;
+- still cannot run commands or MCP tools;
+- is told to keep anything you marked as confidential out of its replies. Its answers still go to Gemini, so the memory can shape them.
+
+Claude reuses a conversation's first system prompt when it resumes, so the choice is fixed at round one. Later rounds follow it automatically, and each round's output shows `[memory: on]` or `[memory: off]`. Gemini's own memory (`GEMINI.md`) is always loaded on its side.
 
 ## Limits and gotchas
 

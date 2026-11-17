@@ -80,6 +80,7 @@ python agent_talk.py --to gemini "第一条消息"              # 开始一次�
 python agent_talk.py --to gemini --file msg.md               # 从文件读消息（含 LaTeX、引号时用）
 python agent_talk.py --to gemini --session <id> "下一轮"     # 接着上一轮讨论
 python agent_talk.py --to claude --model opus ...            # 反方向
+python agent_talk.py --to claude --with-memory ...           # 让 Claude 带上你的 CLAUDE.md 和记忆
 ```
 
 每轮输出对方的回复，后面跟着 `[session: …]`、`[scratch: …]`、`[log: …]` 三行。
@@ -113,6 +114,20 @@ python agent_talk.py --to claude --model opus ...            # 反方向
 - **agy**：每次用单次生效的 `--settings`：设为 `toolPermission: request-review`，拒绝执行命令、调用 MCP、写工作目录，并把草稿目录加入工作区。
 
 agy 没有按次生效的"禁止写工作区外文件"开关。如果你的 agy 配置允许访问工作区外的文件，"其他位置不许写"就只能靠开场说明来约束。
+
+### 让 Claude 带上你的记忆（`--with-memory`）
+
+默认情况下，被 Gemini 拉起来的 Claude 是**干净**的：不加载 CLAUDE.md、不加载自动记忆，也不用你的 Claude 设置，只知道 Gemini 在消息里告诉它的内容。
+
+如果你在 Claude 这边的历史很重要，Gemini 可以在讨论的第一轮加上 `--with-memory`。典型场景是两边在合写同一篇论文。加上之后，Claude 会：
+
+- 加载你的 CLAUDE.md，以及当前目录所在项目的自动记忆；
+- 这次运行使用你的 Claude 设置和钩子；
+- 仍然只能写自己的草稿目录。它以 `--permission-mode dontAsk` 运行，并对工作目录和 `~/.claude` 加了拒绝规则，所以项目、它的记忆和设置都只读；
+- 仍然不能执行命令，也不能用 MCP 工具；
+- 会被提醒：你标为保密的内容不要写进回复。但它的回复终究会发给 Gemini，记忆仍可能影响它说什么。
+
+Claude 续接会话时沿用第一轮的系统提示，所以带不带记忆在第一轮就定了，后续轮次自动沿用。每轮输出都会显示 `[memory: on]` 或 `[memory: off]`。Gemini 那一侧则总是会加载它自己的记忆（`GEMINI.md`）。
 
 ## 局限与注意事项
 
