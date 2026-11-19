@@ -81,6 +81,7 @@ python agent_talk.py --to gemini --file msg.md               # 从文件读消�
 python agent_talk.py --to gemini --session <id> "下一轮"     # 接着上一轮讨论
 python agent_talk.py --to claude --model opus ...            # 反方向
 python agent_talk.py --to claude --with-memory ...           # 让 Claude 带上你的 CLAUDE.md 和记忆
+python agent_talk.py --to gemini --write-dir review/ ...     # 额外允许对方写 review/ 目录
 ```
 
 每轮输出对方的回复，后面跟着 `[session: …]`、`[scratch: …]`、`[log: …]` 三行。
@@ -128,6 +129,14 @@ agy 没有按次生效的"禁止写工作区外文件"开关。如果你的 agy 
 - 会被提醒：你标为保密的内容不要写进回复。但它的回复终究会发给 Gemini，记忆仍可能影响它说什么。
 
 Claude 续接会话时沿用第一轮的系统提示，所以带不带记忆在第一轮就定了，后续轮次自动沿用。每轮输出都会显示 `[memory: on]` 或 `[memory: off]`。Gemini 那一侧则总是会加载它自己的记忆（`GEMINI.md`）。
+
+### 让对方写文件（`--write-dir`）
+
+默认情况下，对方只能写自己的草稿目录。如果想让它把报告或修改写到你指定的地方，就在需要这项权限的每一轮加上 `--write-dir <目录>`（可重复）。目录不存在时会自动创建，对方也会被告知可以写这里。
+
+- **Claude**：对这个目录放行 `Write`/`Edit`，并用 `--add-dir` 加入。
+- **agy**：把这个目录加入工作区。agy 的写入规则按整棵目录树生效，所以如果这个目录在工作目录或某个 `--read-dir` 之内，那个上级目录的写入限制也会一起解除。请从尽量窄的工作目录运行，事后用 `git status` 检查。
+- 无论哪边，执行命令和 MCP 工具仍然禁止。
 
 ## 局限与注意事项
 

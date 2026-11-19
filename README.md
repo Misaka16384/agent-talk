@@ -81,6 +81,7 @@ python agent_talk.py --to gemini --file msg.md               # message from a fi
 python agent_talk.py --to gemini --session <id> "next round" # continue it
 python agent_talk.py --to claude --model opus ...            # the other direction
 python agent_talk.py --to claude --with-memory ...           # Claude with your CLAUDE.md + memory
+python agent_talk.py --to gemini --write-dir review/ ...     # also let the other side write in review/
 ```
 
 Each round prints the reply followed by `[session: …]`, `[scratch: …]` and `[log: …]`.
@@ -128,6 +129,14 @@ If your Claude history matters, Gemini can pass `--with-memory` on the first rou
 - is told to keep anything you marked as confidential out of its replies. Its answers still go to Gemini, so the memory can shape them.
 
 Claude reuses a conversation's first system prompt when it resumes, so the choice is fixed at round one. Later rounds follow it automatically, and each round's output shows `[memory: on]` or `[memory: off]`. Gemini's own memory (`GEMINI.md`) is always loaded on its side.
+
+### Letting the other side write files (`--write-dir`)
+
+By default the other side writes only in its scratch folder. To let it put a report or edits somewhere you choose, pass `--write-dir <dir>` (repeatable) on each round where it should have that access. The directory is created if needed and the other side is told it may write there.
+
+- **Claude:** gets `Write`/`Edit` allow rules for that directory, and the directory is added with `--add-dir`.
+- **agy:** the directory is added to the workspace. agy's write rules work on whole directory trees, so if the write dir lies inside the working directory or a `--read-dir`, the write block on that parent is lifted too. Run from a narrow working directory, and check `git status` afterwards.
+- Commands and MCP tools stay blocked either way.
 
 ## Limits and gotchas
 
